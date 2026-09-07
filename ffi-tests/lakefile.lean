@@ -4,19 +4,21 @@ open System (FilePath)
 
 require subverso from "no-mod"
 
-package «ffi» where
-  precompileModules := false
+package «ffi»
 
 target ffi.o pkg : FilePath := do
-  let srcJob ← inputFile (pkg.dir / "ffi.c") true
-  let picArgs := if System.Platform.isWindows then #[] else #["-fPIC"]
-  buildLeanO (pkg.buildDir / "native" / "ffi.o") srcJob picArgs #["-DLEAN_EXPORTING"]
+  let src ← inputFile (pkg.dir / "ffi.c") true
+  let args :=
+    if System.Platform.isWindows then #["-DLEAN_EXPORTING"]
+    else #["-DLEAN_EXPORTING", "-fPIC"]
+  buildLeanO (pkg.buildDir / "native" / "ffi.o") src #[] args
 
-extern_lib subversoFfiTest pkg := do
-  let oJob ← fetch <| pkg.target `ffi.o
-  let libFile := pkg.staticLibDir / nameToStaticLib "subverso_ffi_test"
-  buildStaticLib libFile #[oJob]
+-- A separate library lets importers load the bindings and C object together.
+lean_lib FfiBindings where
+  roots := #[`Ffi.Bindings]
+  precompileModules := true
+  moreLinkObjs := #[ffi.o]
 
 @[default_target]
 lean_lib Ffi where
-  dynlibs := #[`@/subversoFfiTest:dynlib]
+  roots := #[`FfiTest]

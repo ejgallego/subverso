@@ -43,6 +43,16 @@ def Highlighting.Highlighted.countProofStates (hl : Highlighting.Highlighted) : 
     hl'.countProofStates + 1
   | _ => 0
 
+partial def Highlighting.Highlighted.hasInfoMessage (expected : String) :
+    Highlighting.Highlighted → Bool
+  | .span info hl =>
+    info.any (fun (kind, msg) => kind == .info && Compat.String.trim msg.toString == expected) ||
+      hl.hasInfoMessage expected
+  | .point kind msg => kind == .info && Compat.String.trim msg.toString == expected
+  | .seq hls => hls.any (·.hasInfoMessage expected)
+  | .tactics _ _ _ hl => hl.hasInfoMessage expected
+  | _ => false
+
 namespace Examples
 
 def Example.countProofStates (e : Example) : Nat :=
@@ -344,9 +354,8 @@ Turns a toolchain string (e.g. `leanprover/lean4:v4.8.0`) into a safe single pat
 def sanitizeToolchain (toolchain : String) : String :=
   toolchain.map fun c => if c.isAlphanum || c == '.' then c else '-'
 
--- `#eval` resolves an extern through the package-qualified Lean declaration name rather than the
--- explicit `@[extern]` string. This fixture exports only `lp_ffi_answer`, so it requires setup files
--- that carry a package ID and environments that can install it.
+-- Limit the native-library fixture to the package-aware setup format (Lean 4.27 and newer).
+-- Earlier toolchains remain outside this fixture's test scope.
 open Lean Elab Command in
 #eval show CommandElabM Unit from do
   let env ← getEnv
@@ -538,6 +547,14 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
     let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
     runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
+    let output ← IO.FS.readFile (ffiDir / ".lake" / "build" / "highlighted" / "FfiTest.json")
+    let .ok json := Lean.Json.parse output
+      | throw <| IO.userError "Invalid JSON from Ffi:highlighted"
+    let .ok mod := Module.Module.fromJson? json
+      | throw <| IO.userError "Invalid module from Ffi:highlighted"
+    if mod.items.any (·.code.hasError) || !mod.items.any (·.code.hasInfoMessage "37") then
+      IO.eprintln "Expected Ffi:highlighted to evaluate the foreign function to 37 without errors"
+      return 1
   else
     IO.println s!"Skipping Lake module setup dynlib fixture for Lean toolchain {myToolchain}"
 
