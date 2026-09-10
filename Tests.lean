@@ -547,14 +547,15 @@ def fullRun (demodSrc : System.FilePath) : IO UInt32 := do
     IO.println "Checking that the highlighted facet honors Lake module setup dynlibs"
     let ffiDir ← prepareProject "ffi-tests" myToolchain demodSrc
     runLake ffiDir.toString #["build", "Ffi:highlighted"] (overrideToolchain := some myToolchain)
-    let output ← IO.FS.readFile (ffiDir / ".lake" / "build" / "highlighted" / "FfiTest.json")
-    let .ok json := Lean.Json.parse output
-      | throw <| IO.userError "Invalid JSON from Ffi:highlighted"
-    let .ok mod := Module.Module.fromJson? json
-      | throw <| IO.userError "Invalid module from Ffi:highlighted"
-    if mod.items.any (·.code.hasError) || !mod.items.any (·.code.hasInfoMessage "37") then
-      IO.eprintln "Expected Ffi:highlighted to evaluate the foreign function to 37 without errors"
-      return 1
+    for testMod in ["FfiTest", "FfiSharedTest"] do
+      let output ← IO.FS.readFile (ffiDir / ".lake" / "build" / "highlighted" / s!"{testMod}.json")
+      let .ok json := Lean.Json.parse output
+        | throw <| IO.userError s!"Invalid JSON from {testMod}:highlighted"
+      let .ok mod := Module.Module.fromJson? json
+        | throw <| IO.userError s!"Invalid module from {testMod}:highlighted"
+      if mod.items.any (·.code.hasError) || !mod.items.any (·.code.hasInfoMessage "37") then
+        IO.eprintln s!"Expected {testMod}:highlighted to evaluate the foreign function to 37 without errors"
+        return 1
   else
     IO.println s!"Skipping Lake module setup dynlib fixture for Lean toolchain {myToolchain}"
 
