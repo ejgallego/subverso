@@ -22,14 +22,33 @@ refer to it. Combining results merges these summaries; individual occurrences ar
 structure Diagnostics where
   /--
   Defining modules whose documentation metadata was unavailable when a docstring lookup failed.
-  Sorted and deduplicated by the highlighting entrypoints.
+  Kept as a set so clients retain the uniqueness invariant. JSON encodes it as a sorted array.
 
   These names suggest `import all M`; they do not prove that a docstring exists. With metadata
   unavailable, even an undocumented declaration can contribute its module. Inherited documentation
   contributes the module reached through the loaded `inherit_doc` references.
   -/
-  missingDocStringModules : Array Name := #[]
-deriving Inhabited, Repr, BEq, ToJson, FromJson
+  missingDocStringModules : NameSet := {}
+deriving Inhabited
+
+instance : Repr Diagnostics where
+  reprPrec d _ :=
+    "{ missingDocStringModules := " ++ repr d.missingDocStringModules.toArray ++ " }"
+
+/-- Construct diagnostic metadata from module names, discarding duplicates. -/
+def Diagnostics.ofMissingDocStringModules (modules : Array Name) : Diagnostics :=
+  { missingDocStringModules := modules.foldl (fun names name => names.insert name) ({} : NameSet) }
+
+-- Compare the elements, independently of the tree representation used by the Lean version.
+instance : BEq Diagnostics where
+  beq a b := a.missingDocStringModules.toArray == b.missingDocStringModules.toArray
+
+instance : ToJson Diagnostics where
+  toJson d := Json.mkObj [("missingDocStringModules", toJson d.missingDocStringModules.toArray)]
+
+instance : FromJson Diagnostics where
+  fromJson? json :=
+    Diagnostics.ofMissingDocStringModules <$> json.getObjValAs? (Array Name) "missingDocStringModules"
 
 /--
 Read the `diagnostics` field shared by helper results, modules, and examples. Missing or null
@@ -41,15 +60,10 @@ def Diagnostics.fromJsonField? (json : Json) : Except String Diagnostics :=
 
 open Syntax in
 instance : Quote Diagnostics where
-  quote d := mkCApp ``Diagnostics.mk #[quote d.missingDocStringModules]
-
-/-- Construct diagnostic metadata with sorted, deduplicated module names. -/
-def Diagnostics.ofMissingDocStringModules (modules : Array Name) : Diagnostics :=
-  let names := modules.foldl (fun names name => names.insert name) ({} : NameSet)
-  { missingDocStringModules := names.toArray.qsort Name.quickLt }
+  quote d := mkCApp ``Diagnostics.ofMissingDocStringModules #[quote d.missingDocStringModules.toArray]
 
 /-- Combine diagnostics from separately highlighted pieces of code. -/
 def Diagnostics.append (a b : Diagnostics) : Diagnostics :=
-  .ofMissingDocStringModules (a.missingDocStringModules ++ b.missingDocStringModules)
+  { missingDocStringModules := Compat.NameSet.union a.missingDocStringModules b.missingDocStringModules }
 
 instance : Append Diagnostics := ⟨Diagnostics.append⟩

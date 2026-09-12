@@ -165,12 +165,13 @@ The summary records each missing module once, rather than retaining lookup statu
 Clients can display one warning for the highlighted result. When combining separate highlighting
 results, merge their diagnostics with `++` to preserve deduplication.
 
-`diagnostics.missingDocStringModules` is a sorted, deduplicated array of modules returned by
-`.unavailable` from the staging lookup API, including targets of inherited documentation.
+`diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules returned by `.unavailable`
+from the staging lookup API, including targets of inherited documentation. It stays a set in the
+Lean API; JSON encodes it as a sorted array, and decoding restores the set and removes duplicates.
 
 A suitable warning is “Documentation metadata is unavailable for these modules. If these names are
 documented, use `import all M` to include their docstrings.” `.found` and `.absent` results do not
-produce suggestions. Older Lean versions without the module system return an empty array.
+produce suggestions. Older Lean versions without the module system return an empty set.
 
 Helper results, extracted modules, and saved examples include a `diagnostics` JSON field with this
 metadata. Their decoders accept older payloads that omit the field, defaulting to empty diagnostics.

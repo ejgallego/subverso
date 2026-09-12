@@ -652,7 +652,7 @@ where
 abbrev HighlightM (α : Type) : Type := ReaderT Context (ReaderT InfoTable (StateRefT HighlightState TermElabM)) α
 
 private def HighlightState.diagnostics (st : HighlightState) : Diagnostics :=
-  { missingDocStringModules := st.missingDocStringModules.toArray.qsort Name.quickLt }
+  { missingDocStringModules := st.missingDocStringModules }
 
 private def findDocString? [Monad m] [MonadLiftT IO m] [MonadStateOf HighlightState m]
     (env : Environment) (declName : Name) : m (Option String) := do

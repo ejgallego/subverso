@@ -51,6 +51,7 @@ jobs:
       id: test
       run: |
         lake exe subverso-tests
+        # Import-mode regressions run in main; lake build only compiles them.
         lake exe subverso-internal-tests
 
     - name: Create/update issue on failure

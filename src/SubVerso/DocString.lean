@@ -59,7 +59,9 @@ private partial def unavailableDocStringModule? (env : Environment) (declName : 
         if !data.isModule || mod.importAll then none
         -- Declaration ranges and docstrings share server data. Check the whole module so names
         -- without their own range (e.g. generated declarations) also benefit from this evidence.
-        -- This is a conservative proxy until Lean exposes the loaded metadata level directly.
+        -- Upstream follow-up: expose whether server metadata is available for a module in an
+        -- environment. Until then, a module with no ranges may be reported as unavailable even
+        -- when its metadata was loaded.
         else if !(declRangeExt.getModuleEntries (level := .server) env idx).isEmpty then none
         else some mod.module,
       none

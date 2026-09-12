@@ -1847,19 +1847,31 @@ open Lean SubVerso.Highlighting SubVerso.Compat in
 private unsafe def testDocStringDiagnostics : IO Unit := do
   initSearchPath (← findSysroot)
   -- Import through an umbrella module to exercise transitive defining-module attribution.
+  -- First inspect how SubVerso was built. Some toolchains expose the module APIs while CI
+  -- still builds demodulized sources; their API support alone does not imply a module import.
   enableInitializersExecution
-  let env ← Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {} (isModule := true)
+  let fullEnv ← Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {}
+  let moduleSystem := %first_succeeding [
+    ((do
+      let idx ← fullEnv.getModuleIdxFor? `SubVerso.Highlighting.highlightMany
+      let data ← fullEnv.header.moduleData[idx.toNat]?
+      pure data.isModule) : Option Bool).getD false,
+    false
+  ]
+  let env ← if moduleSystem then do
+      enableInitializersExecution
+      Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {} (isModule := true)
+    else pure fullEnv
   let names := #[`SubVerso.Highlighting.Diagnostics.append, `SubVerso.Highlighting.highlightMany,
     `SubVerso.Highlighting.Diagnostics.append, `SubVerso.Highlighting.Diagnostics.ofMissingDocStringModules]
   let docs ← names.mapM (SubVerso.findDocString env ·)
   let diagnostics := Diagnostics.ofMissingDocStringModules
     #[`SubVerso.Highlighting.Diagnostics, `SubVerso.Highlighting.Code,
       `SubVerso.Highlighting.Diagnostics]
-  let moduleSystem := %first_succeeding [env.header.isModule, false]
   if moduleSystem then
     unless docs.all (·.toOption.isNone) do
       throw <| IO.userError "Expected unavailable docstrings in an exported import"
-    unless diagnostics.missingDocStringModules == #[`SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics] do
+    unless diagnostics.missingDocStringModules.toArray == #[`SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics] do
       throw <| IO.userError s!"Incorrect missing-docstring modules: {repr diagnostics}"
     for name in names do
       let expected := if name == `SubVerso.Highlighting.highlightMany then
@@ -1898,7 +1910,7 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   let allImports := #[`SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics].map fun module =>
     %first_succeeding [{ (Compat.mkImport module) with importAll := true }, Compat.mkImport module]
   enableInitializersExecution
-  let allEnv ← Compat.importModules allImports {} (isModule := true)
+  let allEnv ← Compat.importModules allImports {} (isModule := moduleSystem)
   let allDocs ← names.mapM (SubVerso.findDocString allEnv ·)
   let is34OrNewer : Bool := match Lean.versionString.splitOn "." with
     | _ :: minor :: _ => decide (minor.toNat?.getD 0 ≥ 34)
@@ -1935,7 +1947,7 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   -- with no docstring should also remain quiet when this data is available.
   enableInitializersExecution
   let serverEnv ← Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {}
-    (isModule := true) (asServer := true)
+    (isModule := moduleSystem) (asServer := true)
   let serverDocs ← names.mapM (SubVerso.findDocString serverEnv ·)
   unless serverDocs.all (·.toOption.isSome) do
     throw <| IO.userError "Server data should make documentation available"
@@ -1982,7 +1994,7 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
         highlightFrontendResult result
     if moduleSystem then
-      unless (found.missingDocStringModules.filter (· == `SubVerso.Highlighting.Diagnostics)).size == 1 do
+      unless (found.missingDocStringModules.toArray.filter (· == `SubVerso.Highlighting.Diagnostics)).size == 1 do
         throwError "Public highlighter must return one diagnostic per unavailable module"
     unless !(found.missingDocStringModules.contains env.mainModule) do
       throwError "Local declarations should not suggest an import"
@@ -1990,6 +2002,14 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   discard <| Elab.Frontend.runCommandElabM action { inputCtx } frontendRef
 
   -- Metadata survives each client transport; old payloads default to empty diagnostics.
+  let repeatedModules := Json.mkObj [("missingDocStringModules", toJson
+    #[`SubVerso.Highlighting.Diagnostics, `SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics])]
+  let decodedDiagnostics ← IO.ofExcept (fromJson? (α := Diagnostics) repeatedModules)
+  unless decodedDiagnostics == diagnostics do
+    throw <| IO.userError "Decoding diagnostics should restore the set's uniqueness invariant"
+  let modules ← IO.ofExcept ((toJson decodedDiagnostics).getObjValAs? (Array Name) "missingDocStringModules")
+  unless modules == #[`SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics] do
+    throw <| IO.userError "Encoded diagnostic modules should be sorted and deduplicated"
   let helper := SubVerso.Helper.Result.highlighted (.text "x") diagnostics
   let helperJson := toJson helper
   let .ok (.highlighted _ helperDiagnostics) := fromJson? (α := SubVerso.Helper.Result) helperJson

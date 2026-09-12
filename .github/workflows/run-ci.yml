@@ -158,4 +158,5 @@ jobs:
       - name: Run tests
         run: |
           lake exe subverso-tests
+          # Import-mode regressions run in main; lake build only compiles them.
           lake exe subverso-internal-tests
