@@ -1843,6 +1843,8 @@ def oldSignatureFormat : Bool :=
 
 end ConstSignatures
 
+-- The tests above run during elaboration. The tests below import fresh environments with different
+-- metadata levels and run from main, invoked by `lake exe subverso-internal-tests` in CI.
 open Lean SubVerso.Highlighting SubVerso.Compat in
 private unsafe def testDocStringDiagnostics : IO Unit := do
   initSearchPath (← findSysroot)
