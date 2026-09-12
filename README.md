@@ -169,8 +169,8 @@ The summary covers the entire result. Slicing its highlighted output or selectin
 extracted module items does not narrow the summary. For warnings specific to an excerpt, collect
 diagnostics when highlighting that excerpt and merge only the pieces included in it.
 
-Internally, token classification defers documentation lookup until a hover is retained. Discarded
-candidate meanings and format-only annotations do not contribute missing-docstring warnings.
+Internally, documentation lookup returns a diagnostic with each candidate meaning. Only retained
+hovers contribute to the summary; discarded candidates and format-only annotations do not add warnings.
 
 `diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules returned by `.unavailable`
 from the staging lookup API, including targets of inherited documentation. It stays a set in the

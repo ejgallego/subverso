@@ -1882,7 +1882,7 @@ private def testDocStringCandidates (env serverEnv : Environment) (moduleSystem 
       throwError "Discarded constructor candidates must not contribute diagnostics"
     let (_, st) ← run nodes (literalType #[] stx)
     unless st.missingDocStringModules.isEmpty do
-      throwError "Literal type classification must not look up discarded constant documentation"
+      throwError "Literal type classification must discard unused documentation diagnostics"
     -- A keyword or wildcard can share its span with a constant's elaboration info without
     -- displaying that constant's hover. Keep only the documentation of the displayed kind.
     for text in ["x", "_"] do
@@ -1914,7 +1914,8 @@ private def testDocStringCandidates (env serverEnv : Environment) (moduleSystem 
         throwError "Rendered pretty-printer hovers must still report unavailable documentation"
     let (_, st) ← run #[] do
       let outer : TokenCandidate := {
-        kind := .const unavailable "" none false none, docSource? := some (env, unavailable) }
+        kind := .const unavailable "" none false none
+        missingDocStringModule? := some `SubVerso.Highlighting.Diagnostics }
       discard <| renderTagged (some outer) (.text "fun ")
     unless st.missingDocStringModules.isEmpty do
       throwError "An outer meaning replaced by a keyword must not contribute diagnostics"

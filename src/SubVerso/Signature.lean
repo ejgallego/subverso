@@ -55,20 +55,13 @@ def declNameOfId [Monad m] [MonadError m] : TSyntax ``Lean.Parser.Command.declId
   | `(Lean.Parser.Command.declId|$x:ident.{$_u:ident,*}) => pure x
   | declId => throwErrorAt declId "Unexpected format of name: {declId}"
 
-/-- A checked signature together with its highlighted output and source information. -/
-structure SignatureResult where
-  highlighted : Highlighted
-  diagnostics : Diagnostics
-  original : String
-  start : Compat.String.Pos
-  stop : Compat.String.Pos
-  trees : PersistentArray InfoTree
-
-/-- Check the signature by elaborating and comparing, and retain its highlighting diagnostics. -/
+/--
+Check the signature by elaborating and comparing.
+-/
 def checkSignature
     (sigName : TSyntax ``Lean.Parser.Command.declId)
     (sig : TSyntax ``Lean.Parser.Command.declSig) :
-    CommandElabM SignatureResult := do
+    CommandElabM (Highlighted × Diagnostics × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
   -- First make sure the names won't clash - we want two different declarations to compare.
   let mod ← getMainModule
   let sc ← getCurrMacroScope
@@ -138,4 +131,4 @@ def checkSignature
     let (sigHl, sigDiagnostics) ← highlight sig #[] trees suppressedNS
     return (.seq #[nameHl, sigHl], nameDiagnostics ++ sigDiagnostics)
 
-  return { highlighted := hl, diagnostics, original := str, start := startPos, stop := stopPos, trees }
+  return (hl, diagnostics, str, startPos, stopPos, trees)

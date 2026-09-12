@@ -186,12 +186,12 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
             withEnableInfoTree (m := CommandElabM) true do
               let (hl, diagnostics) ←
                 try
-                  let checked ← checkSignature ⟨name⟩ ⟨sig⟩
+                  let (hl, diagnostics, _, _, _, _) ← checkSignature ⟨name⟩ ⟨sig⟩
                   let msgs := (← get).messages
                   if msgs.hasErrors then
                     return Response.error 9 "Command failed" <| some <| .arr <|
                       (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-                  pure (checked.highlighted, checked.diagnostics)
+                  pure (hl, diagnostics)
                 catch
                   | e =>
                     return Response.error 8 (← e.toMessageData.toString) none

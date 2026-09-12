@@ -370,6 +370,44 @@ elaborated, such as the helpers of an `example`, are found in the node's environ
 def constEnv (nodeEnv commandEnv : Environment) (name : Name) : Environment :=
   if commandEnv.contains name then commandEnv else nodeEnv
 
+/--
+A candidate token meaning and its documentation diagnostic. Lookup happens during classification;
+only retaining the candidate's hover contributes its diagnostic to the result summary.
+This transient data is not stored in `Highlighted` or exported to clients.
+-/
+structure TokenCandidate where
+  kind : Token.Kind
+  /-- Optional pretty-printer output for the candidate's signature or type. -/
+  prettySig? : Option (FormatWithInfos × ContextInfo) := none
+  /-- The unavailable module reported by this candidate's documentation lookup, if any. -/
+  missingDocStringModule? : Option Name := none
+
+private def tokenWithDocString [Monad m] [MonadLiftT IO m]
+    (env : Environment) (declName : Name) (kind : Option String → Token.Kind)
+    (prettySig? : Option (FormatWithInfos × ContextInfo) := none) : m TokenCandidate := do
+  let result ← SubVerso.findDocString env declName
+  return { kind := kind result.toOption, prettySig?, missingDocStringModule? :=
+    match result with
+    | .unavailable mod => some mod
+    | _ => none }
+
+def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
+    (ci : ContextInfo) (fieldInfo : FieldInfo) :
+    m TokenCandidate := do
+  let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
+  let env := constEnv ci.env (← getEnv) fieldInfo.projName
+  let ty ← runMeta
+    try
+      let valTy ← instantiateMVars (← Meta.inferType fieldInfo.val)
+      Meta.ppExpr valTy
+    catch
+      | _ =>
+        try
+          withEnv env <| PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
+        catch _ => pure <| .nil
+  let tyStr := toString ty
+  tokenWithDocString env fieldInfo.projName (.const fieldInfo.projName tyStr · false none)
+
 def infoExists [Monad m] [MonadLiftT IO m] (table : InfoTable) (trees : Array InfoTree)
     (stx : Syntax) : m Bool := do
   match stx.getRange? (canonicalOnly := true) with
@@ -655,62 +693,13 @@ abbrev HighlightM (α : Type) : Type := ReaderT Context (ReaderT InfoTable (Stat
 private def HighlightState.diagnostics (st : HighlightState) : Diagnostics :=
   { missingDocStringModules := st.missingDocStringModules }
 
-private def findDocString? [Monad m] [MonadLiftT IO m] [MonadStateOf HighlightState m]
-    (env : Environment) (declName : Name) : m (Option String) := do
-  let result ← SubVerso.findDocString env declName
-  if let .unavailable mod := result then
+/-- Commit the diagnostic only when retaining this candidate's hover. -/
+private def TokenCandidate.retain [Monad m] [MonadStateOf HighlightState m]
+    (candidate : TokenCandidate) : m Token.Kind := do
+  if let some mod := candidate.missingDocStringModule? then
     modifyThe HighlightState fun st =>
       { st with missingDocStringModules := st.missingDocStringModules.insert mod }
-  return result.toOption
-
-/--
-A candidate token meaning, before deciding whether to retain its hover. Documentation lookup is
-deferred so discarded candidates and format-only annotations do not contribute diagnostics.
-This transient data is not stored in `Highlighted` or exported to clients.
--/
-structure TokenCandidate where
-  kind : Token.Kind
-  /-- The environment and declaration to use if this candidate's docstring will be displayed. -/
-  docSource? : Option (Environment × Name) := none
-  /-- Optional pretty-printer output for the candidate's signature or type. -/
-  prettySig? : Option (FormatWithInfos × ContextInfo) := none
-
-/-- Resolve documentation only for a retained hover, using its original lookup environment. -/
-private def TokenCandidate.withDocString
-    [Monad m] [MonadLiftT IO m] [MonadStateOf HighlightState m]
-    (candidate : TokenCandidate) : m Token.Kind := do
-  let some (env, declName) := candidate.docSource? | return candidate.kind
-  match candidate.kind with
-  | .const name sig _ isDef pp? =>
-    return .const name sig (← findDocString? env declName) isDef pp?
-  | .anonCtor name sig _ pp? =>
-    return .anonCtor name sig (← findDocString? env declName) pp?
-  | .sort _ => return .sort (← findDocString? env declName)
-  | .keyword name occ _ => return .keyword name occ (← findDocString? env declName)
-  | .delim name occ _ => return .delim name occ (← findDocString? env declName)
-  | .operator name occ _ => return .operator name occ (← findDocString? env declName)
-  | .bracket name occ _ => return .bracket name occ (← findDocString? env declName)
-  | .separator name occ _ => return .separator name occ (← findDocString? env declName)
-  | _ => return candidate.kind
-
-def fieldInfoKind [Monad m] [MonadMCtx m] [MonadLiftT IO m] [MonadEnv m]
-    (ci : ContextInfo) (fieldInfo : FieldInfo) :
-    m TokenCandidate := do
-  let runMeta {α} (act : MetaM α) : m α := ci.runMetaM fieldInfo.lctx act
-  let env := constEnv ci.env (← getEnv) fieldInfo.projName
-  let ty ← runMeta
-    try
-      let valTy ← instantiateMVars (← Meta.inferType fieldInfo.val)
-      Meta.ppExpr valTy
-    catch
-      | _ =>
-        try
-          withEnv env <| PrettyPrinter.ppSignature fieldInfo.projName <&> (·.fmt)
-        catch _ => pure <| .nil
-  let tyStr := toString ty
-  return {
-    kind := .const fieldInfo.projName tyStr none false none
-    docSource? := some (env, fieldInfo.projName) }
+  return candidate.kind
 
 private def modify? (f : α → Option α) : (xs : List α) → Option (List α)
   | [] => none
@@ -761,7 +750,7 @@ private def leanPosToUtf8Pos (text : FileMap) : Position → Compat.String.Pos :
 /--
 Finds the appropriate token kind for a token whose meaning is the expression `expr`. When
 `collectFormat` is true, also returns the `FormatWithInfos` to be saved as a reflowable type or
-signature. Docstrings are deferred until the candidate is selected for a hover.
+signature. Documentation diagnostics are returned with the candidate, without changing the summary.
 -/
 def exprKind [Monad m] [MonadReaderOf Context m]
     [MonadEnv m] [MonadLiftT IO m] [MonadExcept ε m] [MonadMCtx m]
@@ -852,23 +841,19 @@ def exprKind [Monad m] [MonadReaderOf Context m]
             return some { kind := .var x tyStr none, prettySig? := prettySig })
           (onConst := fun x => do
             let (sig, prettySig) ← ppSig x
-            return some {
-              kind := .const x sig none false none
-              docSource? := some (constEnv ci.env (← getEnv) x, x)
-              prettySig? := prettySig })
+            return some (← tokenWithDocString (constEnv ci.env (← getEnv) x) x
+              (.const x sig · false none) prettySig))
       else
         let (tyStr, prettySig) ← ppVarType
         return some { kind := .var id tyStr none, prettySig? := prettySig }
     | Expr.const name _ =>
       let (sig, prettySig) ← ppSig name
-      return some {
-        kind := .const name sig none false none
-        docSource? := some (constEnv ci.env (← getEnv) name, name)
-        prettySig? := prettySig }
+      return some (← tokenWithDocString (constEnv ci.env (← getEnv) name) name
+        (.const name sig · false none) prettySig)
     | Expr.sort _ =>
       if let some stx := stx? then
         let k := stx.getKind
-        return some { kind := .sort none, docSource? := some (← getEnv, k) }
+        return some (← tokenWithDocString (← getEnv) k .sort)
       else return some { kind := .sort none }
     | Expr.lit (.strVal s) => return some { kind := .str (some s) false }
     | Expr.mdata _ e =>
@@ -927,7 +912,7 @@ def infoNodesFor (trees : Array InfoTree) (stx : Syntax) :
     (infoForSyntax t stx).toArray.map fun (ci, info) =>
       { ci, info, commandEnv := commandEnv?.getD ci.env }
 
-/-- Select a meaning without looking up documentation for any candidate. -/
+/-- Select a meaning without committing diagnostics for discarded candidates. -/
 private def identCandidate (trees : Array InfoTree) (stx : Syntax)
     (allowUnknownTyped := false) : HighlightM TokenCandidate := do
   let mut candidate : TokenCandidate := { kind := .unknown }
@@ -943,8 +928,8 @@ def anonCtorKind
   let candidate ← identCandidate trees stx
   match candidate.kind with
   | .const n sig doc? _ ppSig? =>
-    return some (← { candidate with kind := .anonCtor n sig doc? ppSig? }.withDocString)
-  | .anonCtor .. => return some (← candidate.withDocString)
+    return some (← { candidate with kind := .anonCtor n sig doc? ppSig? }.retain)
+  | .anonCtor .. => return some (← candidate.retain)
   | _ => return none
 
 partial def renderTagged [Monad m] [MonadReaderOf Context m] [MonadStateOf HighlightState m]
@@ -956,7 +941,6 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m] [MonadStateOf Highl
     -- TODO: fix this upstream in Lean so the infoview also benefits - this hack is terrible
     let mut todo := txt
     let mut toks : Highlighted := .empty
-    let mut outerKind? : Option Token.Kind := none
     while !todo.isEmpty do
       let ws := Compat.String.takeWhile todo (·.isWhitespace)
       unless ws.isEmpty do
@@ -978,9 +962,7 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m] [MonadStateOf Highl
       -- pretty printer output.
       let tok := Compat.String.takeWhile todo (!·.isWhitespace)
       unless tok.isEmpty do
-        if outerKind?.isNone then
-          outerKind? := some (← (outer.getD { kind := .unknown }).withDocString)
-        toks := toks ++ .token ⟨outerKind?.getD .unknown, tok⟩
+        toks := toks ++ .token ⟨← (outer.getD { kind := .unknown }).retain, tok⟩
         todo := Compat.String.drop todo tok.length
 
     pure toks
@@ -991,7 +973,7 @@ partial def renderTagged [Monad m] [MonadReaderOf Context m] [MonadStateOf Highl
       let wsPost := Compat.String.takeRightWhile tok (·.isWhitespace)
       let candidate := (← infoKind ctx info).getD { kind := .unknown }
       let tok := Compat.String.trim tok
-      let k ← if tok.isEmpty then pure candidate.kind else candidate.withDocString
+      let k ← if tok.isEmpty then pure candidate.kind else candidate.retain
       pure <| .seq #[.text wsPre, .token ⟨k, tok⟩, .text wsPost]
     else
       let k? ← infoKind ctx info
@@ -1523,9 +1505,9 @@ private def resolveFormatWithInfos (prettySig : Option (FormatWithInfos × Conte
     return some (formatDataToJson fmt' annots)
   catch _ => return none
 
-/-- Finish the selected hover's documentation and optional signature formatting. -/
+/-- Retain the selected hover and resolve its optional signature formatting. -/
 private def TokenCandidate.resolve (candidate : TokenCandidate) : HighlightM Token.Kind := do
-  match ← candidate.withDocString with
+  match ← candidate.retain with
   | .const name sig docs isDef none =>
     return .const name sig docs isDef (← resolveFormatWithInfos candidate.prettySig?)
   | .var id tyStr none =>
@@ -1601,7 +1583,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
       match decl with
       | .cdecl _index fvar name type _ _
       | .ldecl _index fvar name type _ true _ => -- the `true` means it's from `have`
-        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM (·.withDocString)
+        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM (·.retain)
         let type ← runMeta <| instantiateMVars type
         let tyStr ← renderOrGet type fun e => do
           renderTagged none (← runMeta (ppCodeWithInfos e))
@@ -1610,7 +1592,7 @@ def highlightGoals (ci : ContextInfo) (goals : List MVarId) :
         else pure none
         hyps := hyps.push ⟨#[⟨nk.getD .unknown, name.toString⟩], tyStr, ppType⟩
       | .ldecl _index fvar name type val _ _ =>
-        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM (·.withDocString)
+        let nk ← (← exprKind ci lctx none (.fvar fvar)).mapM (·.retain)
         let type ← runMeta <| instantiateMVars type
         let val ← runMeta <| instantiateMVars val
         let tyDoc ← renderOrGetCodeWithInfos type (runMeta <| ppCodeWithInfos ·)
@@ -2133,13 +2115,15 @@ partial def highlight'
       withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Keyword while looking at {lookingAt}") do
       let name := lookingAt.map (·.1)
       let occ := lookingAt.map fun (n, pos) => s!"{n}-{pos}"
-      let env ← getEnv
-      let syntaxKind (kind : Token.Kind) : HighlightM Token.Kind :=
-        (⟨kind, lookingAt.map (fun (n, _) => (env, n)), none⟩ : TokenCandidate).withDocString
-      -- Core delimiters always use the enclosing syntax's documentation. Other atoms first
-      -- select their displayed meaning, so discarded semantic or syntax meanings stay quiet.
+      let syntaxKind (kind : Option String → Token.Kind) : HighlightM Token.Kind := do
+        let some (n, _) := lookingAt | return kind none
+        let candidate ← tokenWithDocString (← getEnv) n kind
+        if candidate.kind matches .unknown then return .unknown
+        candidate.retain
+      -- A core delimiter (e.g. `:=` or `=>`) is always a `.delim`, regardless of any elaboration
+      -- info that happens to match its span.
       if isSymbolicKeyword x then
-        emitToken stx i ⟨← syntaxKind (.delim name occ none), x⟩
+        emitToken stx i ⟨← syntaxKind (.delim name occ ·), x⟩
       else
       let candidate ← identCandidate trees stx
       -- A wildcard retains its type, but has no documentation hover.
@@ -2163,19 +2147,28 @@ partial def highlight'
       | .sort _ =>
         emitToken stx i ⟨← candidate.resolve, x⟩
       | .unknown =>
-        -- No semantic meaning matched this atom. Punctuation wins over the keyword heuristic;
-        -- an unresolved `·` is a proof-focus delimiter, and remaining words are keywords.
-        let k := match atomKind name occ none x with
+        -- Candidate selection didn't match this to an identifier, so it's not something akin to Mathlib's
+        -- `ℕ`; no elaboration info matches its exact span. Classify it lexically:
+        --  * a `·` with no semantic info is a proof-focus bullet — a delimiter (the `·` that *does*
+        --    resolve, an anonymous-function placeholder like `(· + 1)`, keeps its kind below);
+        --  * `atomKind` classifies punctuation (separator/bracket/operator), and notably a
+        --    bracket-like atom such as `foo[` wins over the keyword heuristic even though it starts
+        --    with a letter;
+        --  * a remaining alphabetic or `#`-prefixed atom is a `.keyword`.
+        let k ← syntaxKind fun docs =>
+          match atomKind name occ docs x with
           | .unknown =>
-            if !x.isEmpty && x.all (· == '·') then .delim name occ none
-            else if isKeyword then .keyword name occ none
+            if !x.isEmpty && x.all (· == '·') then .delim name occ docs
+            else if isKeyword then .keyword name occ docs
             else .unknown
           | k => k
-        emitToken stx i ⟨← syntaxKind k, x⟩
+        emitToken stx i ⟨k, x⟩
       | _ =>
-        -- Keywords such as `instance` can resolve to a generated constant at the same span.
-        -- They retain their syntax meaning; other atoms retain their selected semantic meaning.
-        if isKeyword then emitToken stx i ⟨← syntaxKind (.keyword name occ none), x⟩
+        -- A keyword-shaped atom (e.g. `instance`) can resolve span-exact to a generated declaration
+        -- name — anonymous instances get a synthesized name whose info covers the `instance` token.
+        -- Keep it a `.keyword` rather than rendering it as that constant. A non-keyword atom that
+        -- resolved (Mathlib's `ℕ`, or a `·` placeholder) keeps its semantic kind.
+        if isKeyword then emitToken stx i ⟨← syntaxKind (.keyword name occ ·), x⟩
         else
           let k ← candidate.resolve
           withTraceNode `SubVerso.Highlighting.Code (fun _ => pure m!"Resolved atom is {repr k}") do
