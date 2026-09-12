@@ -43,7 +43,7 @@ Replies that the helper may return.
 -/
 inductive Result where
   /-- Highlighted Lean code with a diagnostic summary for the whole result. -/
-  | highlighted (code : Highlighted) (diagnostics : Diagnostics := {})
+  | highlighted (code : Highlighted) (diagnostics : Diagnostics)
 deriving Repr
 
 section

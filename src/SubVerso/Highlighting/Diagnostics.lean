@@ -3,7 +3,9 @@ Copyright (c) 2026 Lean FRO LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 -/
 module
-public import SubVerso.DocString
+public import Lean.Data.Json
+public import Lean.Data.NameMap
+public import SubVerso.Compat
 
 public section
 
@@ -18,6 +20,8 @@ Metadata about highlighting, separate from messages produced by the highlighted 
 Design choice: return a summary alongside each highlighting result, rather than attach lookup
 status to every token. Clients can render one warning per missing module, even when many tokens
 refer to it. Combining results merges these summaries; individual occurrences are not retained.
+The summary covers the whole result. Slicing its highlighted output does not narrow the summary;
+clients that need a warning for a smaller excerpt should collect diagnostics for that excerpt.
 -/
 structure Diagnostics where
   /--

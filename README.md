@@ -165,6 +165,13 @@ The summary records each missing module once, rather than retaining lookup statu
 Clients can display one warning for the highlighted result. When combining separate highlighting
 results, merge their diagnostics with `++` to preserve deduplication.
 
+The summary covers the entire result. Slicing its highlighted output or selecting a subset of
+extracted module items does not narrow the summary. For warnings specific to an excerpt, collect
+diagnostics when highlighting that excerpt and merge only the pieces included in it.
+
+Internally, token classification defers documentation lookup until a hover is retained. Discarded
+candidate meanings and format-only annotations do not contribute missing-docstring warnings.
+
 `diagnostics.missingDocStringModules` is a `Lean.NameSet` of modules returned by `.unavailable`
 from the staging lookup API, including targets of inherited documentation. It stays a set in the
 Lean API; JSON encodes it as a sorted array, and decoding restores the set and removes duplicates.

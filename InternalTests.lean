@@ -1845,6 +1845,84 @@ end ConstSignatures
 
 -- The tests above run during elaboration. The tests below import fresh environments with different
 -- metadata levels and run from main, invoked by `lake exe subverso-internal-tests` in CI.
+open Lean Lean.Elab SubVerso.Highlighting in
+private def testDocStringCandidates (env serverEnv : Environment) (moduleSystem : Bool) : IO Unit := do
+  let inputCtx := Parser.mkInputContext "x" "<documentation candidates>"
+  let stx ← IO.ofExcept (Parser.runParserCategory env `term "x")
+  let ci : ContextInfo := { env, fileMap := inputCtx.fileMap, ngen := {} }
+  let documented := `SubVerso.Highlighting.highlightMany
+  let unavailable := `SubVerso.Highlighting.Diagnostics.append
+  let node (name : Name) (env : Environment) : InfoNode := {
+    ci := { ci with env }
+    commandEnv := env
+    info := .ofTermInfo {
+      elaborator := `testDocStringCandidates, stx, lctx := {},
+      expectedType? := none, expr := mkConst name } }
+  let some range := stx.getRange? (canonicalOnly := true)
+    | throw <| IO.userError "Expected a canonical source range"
+  let action : Command.CommandElabM Unit := Command.liftTermElabM do
+    let run {α} (nodes : Array InfoNode) (act : HighlightM α) : TermElabM (α × HighlightState) := do
+      let table : InfoTable := { nodesByRange := ({} : SubVerso.Compat.HashMap _ _).insert range nodes }
+      let ctxt : Context := {
+        ids := {}, definitionsPossible := false, includeUnparsed := false,
+        suppressNamespaces := [], sigCache := ← IO.mkRef {} }
+      act.run ctxt |>.run table |>.run .empty
+    -- Candidates can originate in different environments. Only the first equally ranked
+    -- meaning is retained, and its documentation must use that candidate's environment.
+    let nodes := #[node documented serverEnv, node unavailable env]
+    let (kind, st) ← run nodes (identKind #[] ⟨stx⟩)
+    unless kind matches .const _ _ (some _) _ _ do
+      throwError "The selected candidate should retain its available documentation"
+    unless st.missingDocStringModules.isEmpty do
+      throwError "Discarded candidates must not contribute documentation diagnostics"
+    let (ctor, st) ← run nodes (anonCtorKind #[] stx)
+    unless ctor matches some (.anonCtor _ _ (some _) _) do
+      throwError "The selected anonymous constructor should retain its documentation"
+    unless st.missingDocStringModules.isEmpty do
+      throwError "Discarded constructor candidates must not contribute diagnostics"
+    let (_, st) ← run nodes (literalType #[] stx)
+    unless st.missingDocStringModules.isEmpty do
+      throwError "Literal type classification must not look up discarded constant documentation"
+    -- A keyword or wildcard can share its span with a constant's elaboration info without
+    -- displaying that constant's hover. Keep only the documentation of the displayed kind.
+    for text in ["x", "_"] do
+      let atom := Syntax.atom stx.getHeadInfo text
+      let (_, st) ← run #[node unavailable env] (highlight' #[] atom false)
+      unless st.missingDocStringModules.isEmpty do
+        throwError "Keyword and wildcard overrides must discard the constant's diagnostics"
+    -- Selecting the unavailable candidate must still report it; suppressing every lookup
+    -- would pass the negative checks above but lose the feature.
+    let (_, st) ← run nodes.reverse (identKind #[] ⟨stx⟩)
+    if moduleSystem then
+      unless st.missingDocStringModules.toArray == #[`SubVerso.Highlighting.Diagnostics] do
+        throwError "A retained unavailable hover should identify its defining module"
+    else
+      unless st.missingDocStringModules.isEmpty do
+        throwError "Non-module imports should not produce missing-metadata diagnostics"
+    let (_, st) ← run #[] do
+      let fi ← ci.runMetaM {} <|
+        withOptions (·.set `pp.tagAppFns true) (PrettyPrinter.ppExprWithInfos (mkConst unavailable))
+      let (_, annotations) ← resolveFormatAnnotations fi.fmt fi.infos ci
+      unless !annotations.isEmpty do throwError "Expected format annotations in the test"
+    unless st.missingDocStringModules.isEmpty do
+      throwError "Format-only annotations must not contribute docstring diagnostics"
+    let (_, st) ← run #[] do
+      let doc ← ci.runMetaM {} <| ppCodeWithInfos (mkConst unavailable)
+      discard <| renderTagged none doc
+    if moduleSystem then
+      unless st.missingDocStringModules.contains `SubVerso.Highlighting.Diagnostics do
+        throwError "Rendered pretty-printer hovers must still report unavailable documentation"
+    let (_, st) ← run #[] do
+      let outer : TokenCandidate := {
+        kind := .const unavailable "" none false none, docSource? := some (env, unavailable) }
+      discard <| renderTagged (some outer) (.text "fun ")
+    unless st.missingDocStringModules.isEmpty do
+      throwError "An outer meaning replaced by a keyword must not contribute diagnostics"
+  let ref ← IO.mkRef ({
+    commandState := { env, maxRecDepth := defaultMaxRecDepth }
+    parserState := {}, cmdPos := 0 } : Elab.Frontend.State)
+  discard <| Elab.Frontend.runCommandElabM action { inputCtx } ref
+
 open Lean SubVerso.Highlighting SubVerso.Compat in
 private unsafe def testDocStringDiagnostics : IO Unit := do
   initSearchPath (← findSysroot)
@@ -1957,6 +2035,8 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
     throw <| IO.userError "Generated declarations with available server data should not suggest import all"
   unless (← SubVerso.findDocString serverEnv undocumented) == .absent do
     throw <| IO.userError "Server metadata should distinguish absent documentation without import all"
+
+  testDocStringCandidates env serverEnv moduleSystem
 
   -- Highlighting returns a summary across separate commands, deduplicating repeated occurrences.
   -- Locally defined undocumented names must not add their current module to the suggestions.
