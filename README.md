@@ -116,4 +116,59 @@ protocol reminiscent of JSON-RPC, but this is an implementation
 detail - it should be used via the API in `SubVerso.Helper`. It can
 presently be used to elaborate and highlight terms in the context of a
 module.
- 
+
+### Docstring lookup (staging API)
+
+`SubVerso.DocString` provides `SubVerso.findDocString`, a staging API intended for Verso to consume
+before upstreaming to Lean. It returns `SubVerso.DocStringLookup String`:
+
+```lean
+match ← SubVerso.findDocString env declName with
+| .found doc => -- Render the docstring
+  pure ()
+| .absent => -- No docstring and no known unavailable metadata blocking the lookup
+  pure ()
+| .unavailable moduleName => -- Collect the module for an import-all suggestion
+  pure ()
+```
+
+The result's `toOption` method recovers the usual optional docstring. Successful lookups preserve
+Lean's rendering, builtin documentation, tactic aliases, and inherited documentation. The API accepts
+the same `includeBuiltin`, `options`, `currNamespace`, and `openDecls` arguments as Lean 4.34's
+`findDocString?`; rendering arguments unsupported by older Lean versions are ignored.
+
+On a failed lookup, SubVerso follows loaded `inherit_doc` references and checks the defining module's
+effective import mode, including transitive imports. `.unavailable M` means the documentation's
+existence is unknown until that module's metadata is loaded, typically with `import all M` in a
+batch build. This lookup does not load additional metadata. A local declaration can return
+`.unavailable` when it inherits documentation from an imported declaration.
+
+While this API is staged, detection of available server metadata uses declaration ranges from the
+same module as evidence. This conservative proxy can report `.unavailable` if that evidence is
+absent; an authoritative environment query belongs in the eventual Lean implementation. Older Lean
+versions without the module system return only `.found` or `.absent`.
+
+### Highlighting diagnostics
+
+Docstrings from module-system imports may require `import all M` to be available during a batch
+build. SubVerso reports this separately from Lean messages, so clients can render one warning about
+the highlighting rather than adding warnings to the example's expected output.
+
+All highlighting entrypoints accept an optional `diagnostics` collector. Use `withDiagnostics` to
+return the highlighted value together with its metadata; share the collector across calls to
+combine their module sets:
+
+```lean
+let (hl, diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics =>
+  SubVerso.Highlighting.highlight stx messages trees (diagnostics := diagnostics)
+```
+
+`diagnostics.missingDocStringModules` is a sorted, deduplicated array of modules returned by
+`.unavailable` from the staging lookup API, including targets of inherited documentation.
+
+A suitable warning is “Documentation metadata is unavailable for these modules. If these names are
+documented, use `import all M` to include their docstrings.” `.found` and `.absent` results do not
+produce suggestions. Older Lean versions without the module system return an empty array.
+
+Helper results, extracted modules, and saved examples include a `diagnostics` JSON field with this
+metadata. Their decoders accept older payloads that omit the field, defaulting to empty diagnostics.

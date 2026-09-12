@@ -109,7 +109,10 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
 
     let res := res.updateLeading contents
 
-    let hls ← (Frontend.runCommandElabM <| liftTermElabM <| Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)) pctx cmdSt
+    let (hls, diagnostics) ← Highlighting.withDiagnostics fun diagnostics =>
+      (Frontend.runCommandElabM <| liftTermElabM <|
+        Highlighting.highlightFrontendResult res (suppressNamespaces := suppressedNamespaces.toList)
+          (diagnostics := diagnostics)) pctx cmdSt
 
     let items : Array ModuleItem := hls.zip res.syntax |>.map fun (hl, stx) => {
       defines := hl.definedNames.toArray,
@@ -118,7 +121,7 @@ unsafe def go (asServer : Bool) (suppressedNamespaces : Array Name) (mod : Strin
       code := hl
     }
 
-    out.putStrLn (toString (Module.mk items).toJson)
+    out.putStrLn (toString (Module.mk items diagnostics).toJson)
 
     return (0 : UInt32)
 

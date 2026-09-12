@@ -158,3 +158,4 @@ jobs:
       - name: Run tests
         run: |
           lake exe subverso-tests
+          lake exe subverso-internal-tests

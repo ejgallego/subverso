@@ -51,6 +51,7 @@ jobs:
       id: test
       run: |
         lake exe subverso-tests
+        lake exe subverso-internal-tests
 
     - name: Create/update issue on failure
       if: always() && (steps.build.outcome == 'failure') || (steps.config-test.outcome == 'failure') || (steps.test.outcome == 'failure')
