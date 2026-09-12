@@ -62,6 +62,7 @@ structure Example where
   examples can then check for the kind, and throw a user-friendly error if it's the wrong kind.
   -/
   kind : Option Name := none
+  /-- Metadata collected while highlighting this example, separate from its Lean messages. -/
   diagnostics : Diagnostics := {}
 deriving ToJson, Repr
 
@@ -73,9 +74,7 @@ instance : FromJson Example where
     let start ← json.getObjValAs? _ "start"
     let stop ← json.getObjValAs? _ "stop"
     let kind ← fromJson? (json.getObjValD "kind")
-    let diagnostics ←
-      if json.getObjValD "diagnostics" == .null then pure {}
-      else json.getObjValAs? Diagnostics "diagnostics"
+    let diagnostics ← Diagnostics.fromJsonField? json
     return { highlighted, messages, original, start, stop, kind, diagnostics }
 
 open Syntax in

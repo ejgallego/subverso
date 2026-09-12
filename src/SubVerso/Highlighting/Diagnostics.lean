@@ -31,6 +31,14 @@ structure Diagnostics where
   missingDocStringModules : Array Name := #[]
 deriving Inhabited, Repr, BEq, ToJson, FromJson
 
+/--
+Read the `diagnostics` field shared by helper results, modules, and examples. Missing or null
+fields represent empty diagnostics, allowing payloads from older SubVerso versions to be decoded.
+-/
+def Diagnostics.fromJsonField? (json : Json) : Except String Diagnostics :=
+  if json.getObjValD "diagnostics" == .null then pure {}
+  else json.getObjValAs? Diagnostics "diagnostics"
+
 open Syntax in
 instance : Quote Diagnostics where
   quote d := mkCApp ``Diagnostics.mk #[quote d.missingDocStringModules]

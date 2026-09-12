@@ -68,6 +68,7 @@ compact than the underlying array.
 -/
 structure Module where
   items : Array ModuleItem
+  /-- Diagnostic summary for all highlighted items in the module. -/
   diagnostics : Diagnostics := {}
 deriving Inhabited
 
@@ -95,9 +96,7 @@ def Module.fromJson? (json : Json) : Except String Module := do
   let data ← Export.fromJson? data
   let .arr items ← json.getObjVal? "items"
     | throw "Expected array for key 'items'"
-  let diagnostics ←
-    if json.getObjValD "diagnostics" == .null then pure {}
-    else json.getObjValAs? Diagnostics "diagnostics"
+  let diagnostics ← Diagnostics.fromJsonField? json
   return ⟨← items.mapM (getItem data), diagnostics⟩
 where
   getItem (data : Export) (v : Json) : Except String ModuleItem := do
