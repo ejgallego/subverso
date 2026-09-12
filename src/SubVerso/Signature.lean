@@ -60,9 +60,8 @@ Check the signature by elaborating and comparing.
 -/
 def checkSignature
     (sigName : TSyntax ``Lean.Parser.Command.declId)
-    (sig : TSyntax ``Lean.Parser.Command.declSig)
-    (diagnostics : Option DiagnosticsRef := none) :
-    CommandElabM (Highlighted × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
+    (sig : TSyntax ``Lean.Parser.Command.declSig) :
+    CommandElabM (Highlighted × Diagnostics × String × Compat.String.Pos × Compat.String.Pos × PersistentArray InfoTree) := do
   -- First make sure the names won't clash - we want two different declarations to compare.
   let mod ← getMainModule
   let sc ← getCurrMacroScope
@@ -127,7 +126,9 @@ def checkSignature
   let suppressedNS ← getSuppressed
   let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
   let trees := targetTrees ++ trees
-  let hl ← liftTermElabM <| withDeclName `x do
-    pure <| .seq #[← highlight sigName #[] trees suppressedNS (diagnostics := diagnostics), ← highlight sig #[] trees suppressedNS (diagnostics := diagnostics)]
+  let (hl, diagnostics) ← liftTermElabM <| withDeclName `x do
+    let (nameHl, nameDiagnostics) ← highlight sigName #[] trees suppressedNS
+    let (sigHl, sigDiagnostics) ← highlight sig #[] trees suppressedNS
+    return (.seq #[nameHl, sigHl], nameDiagnostics ++ sigDiagnostics)
 
-  return (hl, str, startPos, stopPos, trees)
+  return (hl, diagnostics, str, startPos, stopPos, trees)

@@ -222,7 +222,7 @@ def highlightWithPrefixedMessages (input : String) (msgPrefix := "subverso_test"
   let mut lastPos : Compat.String.Pos := 0
   let allMessages := result.map (·.messages.toArray) |>.flatten
   for cmd in result do
-    let hl ← runTermElabM fun _ =>
+    let (hl, _) ← runTermElabM fun _ =>
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
         let msgs ← allMessages.filterM fun msg =>
           return (← msg.toString).startsWith msgPrefix
@@ -292,7 +292,7 @@ def highlightFromString (input : String) : CommandElabM Highlighting.Highlighted
     |>.run { inputCtx } |>.run { commandState, parserState := {}, cmdPos := 0 }
   let mut hls : Highlighting.Highlighted := .empty
   for stx in commands do
-    let hl ← runTermElabM fun _ =>
+    let (hl, _) ← runTermElabM fun _ =>
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
         let msgs := commandState.messages.toArray
         unless msgs.isEmpty do
@@ -320,7 +320,7 @@ def highlightModuleStyleSegments (input : String) : CommandElabM (Array Highligh
   let result := result.updateLeading input
   runTermElabM fun _ =>
     withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
-      Highlighting.highlightFrontendResult result
+      return (← Highlighting.highlightFrontendResult result).1
 
 open Lean Elab Command in
 @[inherit_doc highlightModuleStyleSegments]
@@ -1735,7 +1735,7 @@ def highlightManyWithMessages (input : String) (messages : Array Message)
   let trees := items.map (·.info.toArray[0]?)
   runTermElabM fun _ =>
     withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
-      let hls ← Highlighting.highlightMany cmds messages trees (includeUnparsed := true)
+      let (hls, _) ← Highlighting.highlightMany cmds messages trees (includeUnparsed := true)
         (startPos? := cmds[0]!.getPos?) (endPos? := some (Compat.String.endPos input))
       return hls.foldl (init := Highlighting.Highlighted.empty) (· ++ ·)
 
@@ -1849,24 +1849,28 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   -- Import through an umbrella module to exercise transitive defining-module attribution.
   enableInitializersExecution
   let env ← Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {} (isModule := true)
-  let names := #[`SubVerso.Highlighting.withDiagnostics, `SubVerso.Highlighting.highlightMany,
-    `SubVerso.Highlighting.withDiagnostics, `SubVerso.Highlighting.findDocStringWithDiagnostics?]
-  let (docs, diagnostics) ← withDiagnostics fun ref =>
-    names.mapM fun n => findDocStringWithDiagnostics? env n ref
+  let names := #[`SubVerso.Highlighting.Diagnostics.append, `SubVerso.Highlighting.highlightMany,
+    `SubVerso.Highlighting.Diagnostics.append, `SubVerso.Highlighting.Diagnostics.ofMissingDocStringModules]
+  let docs ← names.mapM (SubVerso.findDocString env ·)
+  let diagnostics := Diagnostics.ofMissingDocStringModules
+    #[`SubVerso.Highlighting.Diagnostics, `SubVerso.Highlighting.Code,
+      `SubVerso.Highlighting.Diagnostics]
   let moduleSystem := %first_succeeding [env.header.isModule, false]
   if moduleSystem then
-    unless docs.all (·.isNone) do
+    unless docs.all (·.toOption.isNone) do
       throw <| IO.userError "Expected unavailable docstrings in an exported import"
     unless diagnostics.missingDocStringModules == #[`SubVerso.Highlighting.Code, `SubVerso.Highlighting.Diagnostics] do
       throw <| IO.userError s!"Incorrect missing-docstring modules: {repr diagnostics}"
+    for name in names do
+      let expected := if name == `SubVerso.Highlighting.highlightMany then
+          `SubVerso.Highlighting.Code else `SubVerso.Highlighting.Diagnostics
+      unless (← SubVerso.findDocString env name) == .unavailable expected do
+        throw <| IO.userError "Incorrect defining module for unavailable documentation"
   else
-    unless diagnostics.missingDocStringModules.isEmpty do
-      throw <| IO.userError "Unexpected diagnostics without the module system"
-
-  let (_, unknown) ← withDiagnostics fun ref =>
-    findDocStringWithDiagnostics? env `SubVerso.UnknownDeclaration ref
-  unless unknown.missingDocStringModules.isEmpty do
-    throw <| IO.userError "Unknown names should not suggest an import"
+    unless docs.all (fun result => match result with | .unavailable _ => false | _ => true) do
+      throw <| IO.userError "Unexpected unavailable metadata without the module system"
+  unless diagnostics ++ diagnostics == diagnostics do
+    throw <| IO.userError "Combining diagnostic summaries must preserve deduplication"
   unless (← SubVerso.findDocString env `SubVerso.UnknownDeclaration) == .absent do
     throw <| IO.userError "An unknown name should have an absent lookup result"
   if moduleSystem then
@@ -1895,13 +1899,12 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
     %first_succeeding [{ (Compat.mkImport module) with importAll := true }, Compat.mkImport module]
   enableInitializersExecution
   let allEnv ← Compat.importModules allImports {} (isModule := true)
-  let (allDocs, allDiagnostics) ← withDiagnostics fun ref =>
-    names.mapM fun n => findDocStringWithDiagnostics? allEnv n ref
+  let allDocs ← names.mapM (SubVerso.findDocString allEnv ·)
   let is34OrNewer : Bool := match Lean.versionString.splitOn "." with
     | _ :: minor :: _ => decide (minor.toNat?.getD 0 ≥ 34)
     | _ => false
   if is34OrNewer then
-    unless allDocs.all (·.isSome) do
+    unless allDocs.all (·.toOption.isSome) do
       throw <| IO.userError "import all should restore documentation"
     for name in names do
       let .found doc ← SubVerso.findDocString allEnv name
@@ -1910,7 +1913,7 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
         throw <| IO.userError "The staging API must preserve Lean's rendered documentation"
   -- Some Lean versions still look only in server data after an all import in batch mode.
   -- We preserve Lean's lookup semantics, but must not suggest adding an existing qualifier.
-  unless allDiagnostics.missingDocStringModules.isEmpty do
+  unless allDocs.all (fun result => match result with | .unavailable _ => false | _ => true) do
     throw <| IO.userError "Imports already marked all should not produce diagnostics"
 
   -- A failed lookup alone cannot distinguish an absent docstring from unavailable metadata.
@@ -1918,17 +1921,13 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   let undocumented := `SubVerso.Highlighting.fakeToken
   unless env.contains undocumented && allEnv.contains undocumented do
     throw <| IO.userError "The undocumented test declaration must exist in both environments"
-  let (missingDoc, missingMetadata) ← withDiagnostics fun ref =>
-    findDocStringWithDiagnostics? env undocumented ref
-  let (absentDoc, availableMetadata) ← withDiagnostics fun ref =>
-    findDocStringWithDiagnostics? allEnv undocumented ref
-  unless missingDoc.isNone && absentDoc.isNone do
+  let missingDoc ← SubVerso.findDocString env undocumented
+  let absentDoc ← SubVerso.findDocString allEnv undocumented
+  unless missingDoc.toOption.isNone && absentDoc.toOption.isNone do
     throw <| IO.userError "The test declaration must have no docstring"
   if moduleSystem then
-    unless missingMetadata.missingDocStringModules == #[`SubVerso.Highlighting.Code] do
+    unless missingDoc == .unavailable `SubVerso.Highlighting.Code do
       throw <| IO.userError "A failed lookup with unavailable metadata should identify its module"
-  unless availableMetadata.missingDocStringModules.isEmpty do
-    throw <| IO.userError "An absent docstring with available metadata should not suggest import all"
   unless (← SubVerso.findDocString allEnv undocumented) == .absent do
     throw <| IO.userError "The staging API should distinguish absent documentation"
 
@@ -1937,28 +1936,25 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
   enableInitializersExecution
   let serverEnv ← Compat.importModules #[Compat.mkImport `SubVerso.Highlighting] {}
     (isModule := true) (asServer := true)
-  let (serverDocs, serverDiagnostics) ← withDiagnostics fun ref => do
-    let docs ← names.mapM fun n => findDocStringWithDiagnostics? serverEnv n ref
-    discard <| findDocStringWithDiagnostics? serverEnv `SubVerso.Highlighting.Diagnostics.mk ref
-    return docs
-  unless serverDocs.all (·.isSome) do
+  let serverDocs ← names.mapM (SubVerso.findDocString serverEnv ·)
+  unless serverDocs.all (·.toOption.isSome) do
     throw <| IO.userError "Server data should make documentation available"
-  unless serverDiagnostics.missingDocStringModules.isEmpty do
-    throw <| IO.userError "Available server data should not suggest import all"
+  unless (← SubVerso.findDocString serverEnv `SubVerso.Highlighting.Diagnostics.mk) == .absent do
+    throw <| IO.userError "Generated declarations with available server data should not suggest import all"
   unless (← SubVerso.findDocString serverEnv undocumented) == .absent do
     throw <| IO.userError "Server metadata should distinguish absent documentation without import all"
 
-  -- Public highlighting calls share a collector across separate commands. Locally defined
-  -- undocumented names must not add their current module to the suggestions.
+  -- Highlighting returns a summary across separate commands, deduplicating repeated occurrences.
+  -- Locally defined undocumented names must not add their current module to the suggestions.
   let inputCtx := Parser.mkInputContext
     ((if moduleSystem then "public section\n" else "") ++
       "def localUndocumented := 0\n" ++
       "/-- Local documentation. -/\ndef localDocumented := 1\n" ++
-      "@[inherit_doc SubVerso.Highlighting.withDiagnostics]\ndef localInherited := 2\n" ++
+      "@[inherit_doc SubVerso.Highlighting.Diagnostics.append]\ndef localInherited := 2\n" ++
       "@[inherit_doc localInherited]\ndef localInheritedTwice := 3\n" ++
       "@[inherit_doc localDocumented]\ndef localInheritedDocumented := 4\n" ++
       "@[inherit_doc localUndocumented]\ndef localInheritedAbsent := 5\n" ++
-      "#check SubVerso.Highlighting.withDiagnostics\n#check SubVerso.Highlighting.withDiagnostics\n")
+      "#check SubVerso.Highlighting.Diagnostics.append\n#check SubVerso.Highlighting.Diagnostics.append\n")
     "<diagnostics>"
   let state : Elab.Command.State := { env, maxRecDepth := defaultMaxRecDepth }
   let action : Elab.Command.CommandElabM Unit := do
@@ -1982,17 +1978,12 @@ private unsafe def testDocStringDiagnostics : IO Unit := do
         unless (← SubVerso.findDocString localEnv name) ==
             .unavailable `SubVerso.Highlighting.Diagnostics do
           throwError "Inherited documentation should identify the unavailable target module"
-      let (_, inheritedDiagnostics) ← withDiagnostics fun ref => do
-        discard <| findDocStringWithDiagnostics? localEnv `localInherited ref
-        discard <| findDocStringWithDiagnostics? localEnv `localInheritedTwice ref
-      unless inheritedDiagnostics.missingDocStringModules == #[`SubVerso.Highlighting.Diagnostics] do
-        throwError "The collector should deduplicate unavailable inherited documentation"
-    let (_, found) ← withDiagnostics fun ref => Elab.Command.liftTermElabM do
+    let (_, found) ← Elab.Command.liftTermElabM do
       withTheReader Core.Context (fun ctx => { ctx with fileMap := inputCtx.fileMap }) do
-        highlightFrontendResult result (diagnostics := ref)
+        highlightFrontendResult result
     if moduleSystem then
-      unless found.missingDocStringModules.contains `SubVerso.Highlighting.Diagnostics do
-        throwError "Public highlighter lost documentation diagnostics"
+      unless (found.missingDocStringModules.filter (· == `SubVerso.Highlighting.Diagnostics)).size == 1 do
+        throwError "Public highlighter must return one diagnostic per unavailable module"
     unless !(found.missingDocStringModules.contains env.mainModule) do
       throwError "Local declarations should not suggest an import"
   let frontendRef ← IO.mkRef ({ commandState := state, parserState := {}, cmdPos := 0 } : Elab.Frontend.State)

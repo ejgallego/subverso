@@ -260,11 +260,14 @@ meta def elabExample
   let trees ← getInfoTrees
   let allNewMessages := newMessages ++ linterMessages
   let suppressedNS ← getSuppressed
-  let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-    if config.embeddedOnly then
-      pure #[]
-    else
-      allCommands.mapM fun c => liftTermElabM (highlight c allNewMessages.toList.toArray trees suppressedNS (diagnostics := diagnostics))
+  let mut hls := #[]
+  let mut allDiagnostics : Diagnostics := {}
+  unless config.embeddedOnly do
+    for c in allCommands do
+      let (commandHl, commandDiagnostics) ←
+        liftTermElabM (highlight c allNewMessages.toList.toArray trees suppressedNS)
+      hls := hls.push commandHl
+      allDiagnostics := allDiagnostics ++ commandDiagnostics
   let freshMsgs ← allNewMessages.toList.mapM fun m => do pure (m.severity, ← contents m)
   let some b := allCommands[0]!.getPos?
     | throwErrorAt allCommands[0]! "Failed to get source position"
@@ -278,11 +281,11 @@ meta def elabExample
   let text ← getFileMap
   let str := Compat.String.Pos.extract text.source b' e'
   if config.error || !config.keep then set initSt
-  saveExample name (.seq hl) str (text.toPosition b) (text.toPosition e) freshMsgs config.kind diagnostics
+  saveExample name (.seq hls) str (text.toPosition b) (text.toPosition e) freshMsgs config.kind allDiagnostics
 
   for (tmName, term) in termExamples do
-    let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-      liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS (diagnostics := diagnostics))
+    let (hl, diagnostics) ←
+      liftTermElabM (highlight term allNewMessages.toList.toArray trees suppressedNS)
     let .original leading startPos _ _ := term.getHeadInfo
       | throwErrorAt term "Failed to get source position"
     let .original _ _ trailing stopPos := term.getTailInfo
@@ -406,8 +409,8 @@ elab_rules : command
       | throwErrorAt x "Failed to get source position"
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
-    let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-      liftTermElabM <| highlight x #[] trees suppressedNS (diagnostics := diagnostics)
+    let (hl, diagnostics) ←
+      liftTermElabM <| highlight x #[] trees suppressedNS
     saveExample name hl str (text.toPosition startPos) (text.toPosition stopPos) [] none diagnostics
 
 scoped syntax "%show_term " ("(" &"kind" " := " ident ")")? ident (":" term)? " := " term : command
@@ -426,15 +429,15 @@ elab_rules : command
       | throwErrorAt x "Failed to get source position"
     let str := Compat.String.Pos.extract text.source leading.startPos trailing.stopPos
     let suppressedNS ← getSuppressed
-    let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-      liftTermElabM <| highlight tm #[] trees suppressedNS (diagnostics := diagnostics)
+    let (hl, diagnostics) ←
+      liftTermElabM <| highlight tm #[] trees suppressedNS
     let kind? := kind?.map (·.getId.eraseMacroScopes)
 
     saveExample x hl str (text.toPosition startPos) (text.toPosition stopPos) [] kind? diagnostics
 
     for (tmName, term) in termExamples do
-      let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-        liftTermElabM (highlight term #[] trees suppressedNS (diagnostics := diagnostics))
+      let (hl, diagnostics) ←
+        liftTermElabM (highlight term #[] trees suppressedNS)
       let .original leading startPos _ _ := term.getHeadInfo
         | throwErrorAt term "Failed to get source position"
       let .original _ _ trailing stopPos := term.getTailInfo
@@ -448,13 +451,12 @@ elab_rules : command
     let text ← getFileMap
     let (sig, termExamples) := extractExamples sig .empty
     let sig : TSyntax `Lean.Parser.Command.declSig := ⟨sig⟩
-    let ((hl, str, startPos, stopPos, trees), diagnostics) ← withDiagnostics fun diagnostics =>
-      checkSignature sigName sig (diagnostics := diagnostics)
+    let (hl, diagnostics, str, startPos, stopPos, trees) ← checkSignature sigName sig
     let suppressedNS ← getSuppressed
     let declName ← declNameOfId sigName
     for (tmName, term) in termExamples do
-        let (hl, diagnostics) ← withDiagnostics fun diagnostics =>
-          liftTermElabM (highlight term #[] trees suppressedNS (diagnostics := diagnostics))
+        let (hl, diagnostics) ←
+          liftTermElabM (highlight term #[] trees suppressedNS)
         let .original leading startPos _ _ := term.getHeadInfo
           | throwErrorAt term "Failed to get source position"
         let .original _ _ trailing stopPos := term.getTailInfo

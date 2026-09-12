@@ -12,11 +12,17 @@ open SubVerso.Compat
 
 namespace SubVerso.Highlighting
 
-/-- Metadata about highlighting, separate from messages produced by the highlighted code. -/
+/--
+Metadata about highlighting, separate from messages produced by the highlighted code.
+
+Design choice: return a summary alongside each highlighting result, rather than attach lookup
+status to every token. Clients can render one warning per missing module, even when many tokens
+refer to it. Combining results merges these summaries; individual occurrences are not retained.
+-/
 structure Diagnostics where
   /--
   Defining modules whose documentation metadata was unavailable when a docstring lookup failed.
-  Sorted and deduplicated by `withDiagnostics`.
+  Sorted and deduplicated by the highlighting entrypoints.
 
   These names suggest `import all M`; they do not prove that a docstring exists. With metadata
   unavailable, even an undocumented declaration can contribute its module. Inherited documentation
@@ -29,23 +35,13 @@ open Syntax in
 instance : Quote Diagnostics where
   quote d := mkCApp ``Diagnostics.mk #[quote d.missingDocStringModules]
 
-/-- A collector that can be shared by several highlighting calls. -/
-abbrev DiagnosticsRef := IO.Ref NameSet
+/-- Construct diagnostic metadata with sorted, deduplicated module names. -/
+def Diagnostics.ofMissingDocStringModules (modules : Array Name) : Diagnostics :=
+  let names := modules.foldl (fun names name => names.insert name) ({} : NameSet)
+  { missingDocStringModules := names.toArray.qsort Name.quickLt }
 
-/-- Run highlighting with a fresh collector and return its deduplicated diagnostic metadata. -/
-def withDiagnostics [Monad m] [MonadLiftT IO m] (act : DiagnosticsRef → m α) :
-    m (α × Diagnostics) := do
-  let ref ← (IO.mkRef ({} : NameSet) : IO _)
-  let result ← act ref
-  let modules := (← (ref.get : IO NameSet)).toArray.qsort Name.quickLt
-  return (result, { missingDocStringModules := modules })
+/-- Combine diagnostics from separately highlighted pieces of code. -/
+def Diagnostics.append (a b : Diagnostics) : Diagnostics :=
+  .ofMissingDocStringModules (a.missingDocStringModules ++ b.missingDocStringModules)
 
-/-- Look up documentation, recording unavailable metadata only when lookup fails. -/
-def findDocStringWithDiagnostics? [Monad m] [MonadLiftT IO m]
-    (env : Environment) (declName : Name) (diagnostics : Option DiagnosticsRef := none) :
-    m (Option String) := do
-  let result ← SubVerso.findDocString env declName
-  if let .unavailable mod := result then
-    if let some ref := diagnostics then
-      (ref.modify (·.insert mod) : IO Unit)
-  return result.toOption
+instance : Append Diagnostics := ⟨Diagnostics.append⟩

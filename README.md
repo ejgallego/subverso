@@ -154,14 +154,16 @@ Docstrings from module-system imports may require `import all M` to be available
 build. SubVerso reports this separately from Lean messages, so clients can render one warning about
 the highlighting rather than adding warnings to the example's expected output.
 
-All highlighting entrypoints accept an optional `diagnostics` collector. Use `withDiagnostics` to
-return the highlighted value together with its metadata; share the collector across calls to
-combine their module sets:
+All highlighting entrypoints return a pair containing the highlighted output and a diagnostic
+summary:
 
 ```lean
-let (hl, diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics =>
-  SubVerso.Highlighting.highlight stx messages trees (diagnostics := diagnostics)
+let (hl, diagnostics) ← SubVerso.Highlighting.highlight stx messages trees
 ```
+
+The summary records each missing module once, rather than retaining lookup status on every token.
+Clients can display one warning for the highlighted result. When combining separate highlighting
+results, merge their diagnostics with `++` to preserve deduplication.
 
 `diagnostics.missingDocStringModules` is a sorted, deduplicated array of modules returned by
 `.unavailable` from the staging lookup API, including targets of inherited documentation.

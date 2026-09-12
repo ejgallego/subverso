@@ -71,9 +71,9 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 5 "Elaboration failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let (hl, diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics => liftTermElabM do
+              let (hl, diagnostics) ← liftTermElabM do
                 -- No messages - those are confusing here
-                highlight stx #[] trees (diagnostics := diagnostics)
+                highlight stx #[] trees
               pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
@@ -116,9 +116,9 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 5 "Elaboration failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let (hl, diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics => liftTermElabM do
+              let (hl, diagnostics) ← liftTermElabM do
                 -- No messages - those are confusing here
-                highlight name #[] trees (diagnostics := diagnostics)
+                highlight name #[] trees
               pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
@@ -149,8 +149,8 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
               if msgs.hasErrors then
                 return Response.error 7 "Command failed" <| some <| .arr <|
                   (← msgs.toArray.filter (·.severity == .error) |>.mapM (Json.str <$> ·.toString))
-              let (hl, diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics => liftTermElabM do
-                highlight stx msgs.toArray trees (diagnostics := diagnostics)
+              let (hl, diagnostics) ← liftTermElabM do
+                highlight stx msgs.toArray trees
               pure <| Response.result <| .highlighted hl diagnostics
           finally
             setInfoState infoState
@@ -186,8 +186,7 @@ def handle (input output : IO.FS.Stream) : FrontendM Bool := do
             withEnableInfoTree (m := CommandElabM) true do
               let (hl, diagnostics) ←
                 try
-                  let ((hl, _, _, _, _), diagnostics) ← SubVerso.Highlighting.withDiagnostics fun diagnostics =>
-                    checkSignature ⟨name⟩ ⟨sig⟩ (diagnostics := diagnostics)
+                  let (hl, diagnostics, _, _, _, _) ← checkSignature ⟨name⟩ ⟨sig⟩
                   let msgs := (← get).messages
                   if msgs.hasErrors then
                     return Response.error 9 "Command failed" <| some <| .arr <|
